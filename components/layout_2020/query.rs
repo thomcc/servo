@@ -5,7 +5,7 @@
 //! Utilities for querying the layout, as needed by the layout thread.
 
 use crate::context::LayoutContext;
-use crate::flow::FragmentTreeRoot;
+use crate::flow::FragmentTree;
 use app_units::Au;
 use euclid::default::{Point2D, Rect};
 use euclid::Size2D;
@@ -157,14 +157,9 @@ impl LayoutRPC for LayoutRPCImpl {
 
 pub fn process_content_box_request(
     requested_node: OpaqueNode,
-    fragment_tree_root: Option<Arc<FragmentTreeRoot>>,
+    fragment_tree: Option<Arc<FragmentTree>>,
 ) -> Option<Rect<Au>> {
-    let fragment_tree_root = match fragment_tree_root {
-        Some(fragment_tree_root) => fragment_tree_root,
-        None => return None,
-    };
-
-    Some(fragment_tree_root.get_content_box_for_node(requested_node))
+    Some(fragment_tree?.get_content_box_for_node(requested_node))
 }
 
 pub fn process_content_boxes_request(_requested_node: OpaqueNode) -> Vec<Rect<Au>> {
@@ -173,14 +168,13 @@ pub fn process_content_boxes_request(_requested_node: OpaqueNode) -> Vec<Rect<Au
 
 pub fn process_node_geometry_request(
     requested_node: OpaqueNode,
-    fragment_tree_root: Option<Arc<FragmentTreeRoot>>,
+    fragment_tree: Option<Arc<FragmentTree>>,
 ) -> Rect<i32> {
-    let fragment_tree_root = match fragment_tree_root {
-        Some(fragment_tree_root) => fragment_tree_root,
-        None => return Rect::zero(),
-    };
-
-    fragment_tree_root.get_border_dimensions_for_node(requested_node)
+    if let Some(fragment_tree) = fragment_tree {
+        fragment_tree.get_border_dimensions_for_node(requested_node)
+    } else {
+        Rect::zero()
+    }
 }
 
 pub fn process_node_scroll_id_request<'dom>(
