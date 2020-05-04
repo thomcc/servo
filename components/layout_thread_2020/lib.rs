@@ -1292,11 +1292,8 @@ impl LayoutThread {
             document.will_paint();
         }
 
-        let mut display_list = DisplayListBuilder::new(
-            self.id.to_webrender(),
-            context,
-            fragment_tree.scrollable_overflow(),
-        );
+        let mut display_list =
+            DisplayListBuilder::new(self.id.to_webrender(), context, &fragment_tree);
 
         fragment_tree.build_display_list(&mut display_list);
 

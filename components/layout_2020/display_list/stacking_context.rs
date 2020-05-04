@@ -25,7 +25,7 @@ use style::values::generics::box_::Perspective;
 use style::values::generics::transform;
 use style::values::specified::box_::DisplayOutside;
 use webrender_api as wr;
-use webrender_api::units::{LayoutPoint, LayoutTransform, LayoutVector2D};
+use webrender_api::units::{LayoutPoint, LayoutRect, LayoutSize, LayoutTransform, LayoutVector2D};
 
 #[derive(Clone)]
 pub(crate) struct ContainingBlock {
@@ -94,7 +94,7 @@ impl<'a> StackingContextBuilder<'a> {
     }
 }
 
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum StackingContextSection {
     BackgroundsAndBorders,
     BlockBackgroundsAndBorders,
@@ -244,7 +244,107 @@ impl StackingContext {
         true
     }
 
-    pub(crate) fn build_display_list<'a>(&self, builder: &'a mut DisplayListBuilder) {
+    /// https://drafts.csswg.org/css-backgrounds/#special-backgrounds
+    ///
+    /// This is only called for the root `StackingContext`
+    pub(crate) fn build_canvas_background_display_list(
+        &self,
+        builder: &mut DisplayListBuilder,
+        fragment_tree: &crate::FragmentTree,
+    ) {
+        let style = if let Some(style) = &fragment_tree.canvas_background.style {
+            style
+        } else {
+            // The root element has `display: none`,
+            // or the canvas background is taken from `<body>` which has `display: none`
+            return;
+        };
+
+        macro_rules! debug_panic {
+            ($msg: expr) => {
+                if cfg!(debug_assertions) {
+                    panic!($msg)
+                }
+            };
+        }
+
+        let first_if_any = self.fragments.first().or_else(|| {
+            // There wasn’t any `StackingContextFragment` in the root `StackingContext`,
+            // because the root element generates a stacking context. Let’s find that one.
+            self.stacking_contexts
+                .first()
+                .and_then(|first_child_stacking_context| {
+                    first_child_stacking_context.fragments.first()
+                })
+        });
+
+        let first_stacking_context_fragment = if let Some(first) = first_if_any {
+            first
+        } else {
+            // This should only happen if the root element has `display: none`
+            debug_panic!("`CanvasBackground::for_root_element` should have returned `style: None`");
+            return;
+        };
+
+        let fragment = first_stacking_context_fragment.fragment.borrow();
+        let box_fragment = if let Fragment::Box(box_fragment) = &*fragment {
+            box_fragment
+        } else {
+            debug_panic!("Expected a box-generated fragment");
+            return;
+        };
+
+        // The `StackingContextFragment` we found is for the root DOM element:
+        debug_assert_eq!(
+            box_fragment.tag,
+            fragment_tree.canvas_background.root_element
+        );
+
+        // Take the `SpatialId` to apply any CSS transform, but not the `ClipId`
+        builder.current_space_and_clip.spatial_id =
+            first_stacking_context_fragment.space_and_clip.spatial_id;
+
+        // The painting area is theoretically the infinite 2D plane,
+        // but we need a rectangle with finite coordinates.
+        //
+        // FIXME: a more accurate answer is:
+        //
+        // * Take two rectangles
+        //   - `fragment_tree.initial_containing_block` (area the viewport shows
+        //     when at initial scroll position), and
+        //   - `fragment_tree.scrollable_overflow` (areas we can scroll to)
+        // * Transform them from the top-level coordinate system
+        //   to the one for the local `SpatialId`.
+        //   This involves (see `build_reference_frame_if_necessary`)
+        //   - The change of origin to the top-left corner of the border rect of the fragment
+        //   - The result of `calculate_transform_matrix`
+        //   - The result of `calculate_perspective_matrix`
+        // * Take the axis-aligned
+        //   (in local coordinates, which may be rotated from top-level coordinates)
+        //   bounding box of those two transformed rectangles.
+        //
+        // Instead, let’s use a huge rectangle that will hopefully contain everything.
+        //
+        // `f32` has 24 bits of mantissa.
+        // 20 bits of magnitude leaves a few bits of precision
+        // for `background-position` computation to be accurate
+        // to more than a device pixel on very high DPI.
+        const BIG: f32 = (1u32 << 20) as f32;
+        let painting_area = &LayoutRect::new(
+            LayoutPoint::new(-BIG / 2., -BIG / 2.),
+            LayoutSize::new(BIG, BIG),
+        );
+
+        let containing_block = &first_stacking_context_fragment.containing_block;
+        let source = super::background::Source::Canvas {
+            style,
+            painting_area,
+        };
+        super::BuilderForBoxFragment::new(box_fragment, containing_block)
+            .build_background(builder, source);
+    }
+
+    pub(crate) fn build_display_list(&self, builder: &mut DisplayListBuilder) {
         let pushed_context = self.push_webrender_stacking_context_if_necessary(builder);
 
         // Properly order display items that make up a stacking context. "Steps" here
