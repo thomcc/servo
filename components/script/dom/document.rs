@@ -384,6 +384,7 @@ pub struct Document {
     /// A timeline for animations which is used for synchronizing animations.
     /// https://drafts.csswg.org/web-animations/#timeline
     animation_timeline: DomRefCell<AnimationTimeline>,
+    dirty_root: MutNullableDom<Element>,
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
@@ -443,6 +444,67 @@ enum ElementLookupResult {
 
 #[allow(non_snake_case)]
 impl Document {
+    pub fn note_dirty_node(&self, node: &Node) {
+        debug_assert!(*node.owner_doc() == *self);
+        if !node.is_connected() {
+            return;
+        }
+
+        let parent: DomRoot<Node>;
+        let element = match node.downcast::<Element>() {
+            Some(element) => element,
+            None => {
+                parent = node
+                    .inclusive_ancestors(ShadowIncluding::Yes)
+                    .nth(1)
+                    .unwrap();
+                if &*parent == self.upcast::<Node>() {
+                    return;
+                }
+                &parent.downcast::<Element>().unwrap()
+            },
+        };
+
+        let dirty_root = match self.dirty_root.get() {
+            None => {
+                element
+                    .upcast::<Node>()
+                    .set_flag(NodeFlags::HAS_DIRTY_DESCENDANTS, true);
+                self.dirty_root.set(Some(element));
+                return;
+            },
+            Some(root) => root,
+        };
+
+        for ancestor in element
+            .upcast::<Node>()
+            .inclusive_ancestors(ShadowIncluding::Yes)
+        {
+            if ancestor.get_flag(NodeFlags::HAS_DIRTY_DESCENDANTS) {
+                return;
+            }
+            if ancestor.is::<Element>() {
+                ancestor.set_flag(NodeFlags::HAS_DIRTY_DESCENDANTS, true);
+            }
+        }
+
+        let new_dirty_root = element
+            .upcast::<Node>()
+            .common_ancestor(dirty_root.upcast(), ShadowIncluding::Yes);
+        self.dirty_root
+            .set(Some(new_dirty_root.downcast::<Element>().unwrap()));
+        for ancestor in new_dirty_root
+            .inclusive_ancestors(ShadowIncluding::Yes)
+            .skip(1)
+        {
+            ancestor.set_flag(NodeFlags::HAS_DIRTY_DESCENDANTS, false);
+        }
+    }
+
+    pub fn take_dirty_root(&self) -> Option<DomRoot<Element>> {
+        self.dirty_root.take()
+    }
+
     #[inline]
     pub fn loader(&self) -> Ref<DocumentLoader> {
         self.loader.borrow()
@@ -2913,6 +2975,7 @@ impl Document {
             } else {
                 DomRefCell::new(AnimationTimeline::new())
             },
+            dirty_root: Default::default(),
         }
     }
 
