@@ -1628,6 +1628,12 @@ impl Window {
             document.flush_dirty_canvases();
         }
 
+        let dirty_root = document
+            .take_dirty_root()
+            .filter(|_| !stylesheets_changed)
+            .or_else(|| document.GetDocumentElement())
+            .map(|root| root.upcast::<Node>().to_trusted_node_address());
+
         // Send new document and relevant styles to layout.
         let needs_display = reflow_goal.needs_display();
         let reflow = ScriptReflow {
@@ -1635,6 +1641,7 @@ impl Window {
                 page_clip_rect: self.page_clip_rect.get(),
             },
             document: document.upcast::<Node>().to_trusted_node_address(),
+            dirty_root,
             stylesheets_changed,
             window_size: self.window_size.get(),
             origin: self.origin().immutable().clone(),
